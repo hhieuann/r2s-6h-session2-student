@@ -52,7 +52,7 @@ class InventoryServiceTest {
                 .build();
 
         // Chú ý: Code ban đầu dùng findById. Sau khi bạn fix Bug 2, đổi sang findByIdWithPessimisticLock!
-        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(productRepository.findByIdWithPessimisticLock(productId)).thenReturn(Optional.of(product));
 
         // TODO: [Student] 2. Act
         boolean result = inventoryService.deductStock(productId, 3);
@@ -72,7 +72,7 @@ class InventoryServiceTest {
                 .stockQuantity(2)
                 .build();
 
-        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(productRepository.findByIdWithPessimisticLock(productId)).thenReturn(Optional.of(product));
 
         boolean result = inventoryService.deductStock(productId, 5);
 
@@ -84,7 +84,7 @@ class InventoryServiceTest {
     void deductStock_WhenProductNotFound_ShouldThrowIllegalArgumentException() {
         // TODO: [Student] Mock repository trả về Optional.empty() và kiểm tra ngoại lệ IllegalArgumentException
         Long invalidId = 999L;
-        when(productRepository.findById(invalidId)).thenReturn(Optional.empty());
+        when(productRepository.findByIdWithPessimisticLock(invalidId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> inventoryService.deductStock(invalidId, 1))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -125,7 +125,7 @@ class InventoryServiceTest {
         // TODO: [Student] Mock getProduct / findById và productRepository.save(...)
         Long productId = 1L;
         Product product = Product.builder().id(productId).stockQuantity(5).build();
-        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(productRepository.findByIdWithPessimisticLock(productId)).thenReturn(Optional.of(product));
         when(productRepository.save(any(Product.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         Product updated = inventoryService.resetStock(productId, 100);
