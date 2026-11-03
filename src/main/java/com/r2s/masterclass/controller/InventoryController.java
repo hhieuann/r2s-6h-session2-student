@@ -1,6 +1,7 @@
 package com.r2s.masterclass.controller;
 
 import com.r2s.masterclass.domain.Product;
+import com.r2s.masterclass.dto.InventoryAuditLogResponseDTO;
 import com.r2s.masterclass.dto.StockDeductRequestDTO;
 import com.r2s.masterclass.service.InventoryService;
 import jakarta.validation.Valid;
@@ -9,6 +10,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -28,6 +30,11 @@ public class InventoryController {
                 "price", product.getPrice(),
                 "stockQuantity", product.getStockQuantity()
         ));
+    }
+
+    @GetMapping("/{productId}/audit-logs")
+    public ResponseEntity<List<InventoryAuditLogResponseDTO>> getAuditLogs(@PathVariable Long productId) {
+        return ResponseEntity.ok(inventoryService.getAuditLogs(productId));
     }
 
     @PostMapping("/reset/{productId}")
