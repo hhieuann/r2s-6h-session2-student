@@ -2,11 +2,14 @@ package com.r2s.masterclass.domain;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 
 import java.math.BigDecimal;
 
 @Entity
 @Table(name = "products")
+// Module 2: các Product proxy (lazy từ OrderItem) cũng được nạp gộp bằng "WHERE id IN (...)"
+@BatchSize(size = 50)
 @Getter
 @Setter
 @NoArgsConstructor

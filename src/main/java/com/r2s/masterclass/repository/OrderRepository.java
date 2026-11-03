@@ -2,6 +2,8 @@ package com.r2s.masterclass.repository;
 
 import com.r2s.masterclass.domain.Order;
 import com.r2s.masterclass.domain.OrderStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -23,4 +25,12 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
            "LEFT JOIN FETCH i.product " +
            "WHERE o.status = :status")
     List<Order> findByStatusWithItemsAndProducts(@Param("status") OrderStatus status);
+
+    /**
+     * Module 2: phân trang an toàn. KHÔNG JOIN FETCH collection ở đây, nếu không Hibernate
+     * sẽ bỏ LIMIT/OFFSET và phân trang trên RAM (cảnh báo HHH000104).
+     * Items được nạp gộp nhờ @BatchSize trên Order.items.
+     */
+    @Query("SELECT o FROM Order o WHERE o.status = :status ORDER BY o.createdAt DESC")
+    Page<Order> findOrdersPaged(@Param("status") OrderStatus status, Pageable pageable);
 }

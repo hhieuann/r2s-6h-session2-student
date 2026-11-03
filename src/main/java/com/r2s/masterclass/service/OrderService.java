@@ -10,6 +10,8 @@ import com.r2s.masterclass.repository.OrderRepository;
 import com.r2s.masterclass.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -79,34 +81,45 @@ public class OrderService {
     public List<OrderResponseDTO> getAllOrdersWithDetails(OrderStatus status) {
         log.info("Fetching orders with status: {}", status);
 
-        List<Order> orders = orderRepository.findByStatusWithItemsAndProducts(status);
-        List<OrderResponseDTO> results = new ArrayList<>();
-
-        for (Order order : orders) {
-            List<OrderItemResponseDTO> itemDTOs = order.getItems().stream()
-                    .map(item -> OrderItemResponseDTO.builder()
-                            .itemId(item.getId())
-                            .productId(item.getProduct().getId())
-                            .productName(item.getProduct().getName()) // Product đã được JOIN FETCH, không bắn thêm SQL
-                            .quantity(item.getQuantity())
-                            .unitPrice(item.getUnitPrice())
-                            .build())
-                    .collect(Collectors.toList());
-
-            OrderResponseDTO dto = OrderResponseDTO.builder()
-                    .orderId(order.getId())
-                    .orderCode(order.getOrderCode())
-                    .customerEmail(order.getCustomerEmail())
-                    .status(order.getStatus())
-                    .totalAmount(order.getTotalAmount())
-                    .createdAt(order.getCreatedAt())
-                    .items(itemDTOs)
-                    .build();
-
-            results.add(dto);
-        }
+        // Items và Product đã được JOIN FETCH nên toDto() không bắn thêm câu SQL nào
+        List<OrderResponseDTO> results = orderRepository.findByStatusWithItemsAndProducts(status).stream()
+                .map(this::toDto)
+                .collect(Collectors.toList());
 
         log.info("Finished processing {} orders into DTOs", results.size());
         return results;
+    }
+
+    /**
+     * Module 2: phân trang an toàn khi cần lấy kèm collection items.
+     * Câu 1: SELECT orders ... LIMIT/OFFSET (phân trang dưới DB, không kéo cả bảng về RAM).
+     * Câu 2: @BatchSize gom items của cả trang bằng "WHERE order_id IN (...)".
+     * Câu 3: @BatchSize trên Product gom các sản phẩm bằng "WHERE id IN (...)".
+     */
+    @Transactional(readOnly = true)
+    public Page<OrderResponseDTO> getOrdersPaged(OrderStatus status, Pageable pageable) {
+        return orderRepository.findOrdersPaged(status, pageable).map(this::toDto);
+    }
+
+    private OrderResponseDTO toDto(Order order) {
+        List<OrderItemResponseDTO> itemDTOs = order.getItems().stream()
+                .map(item -> OrderItemResponseDTO.builder()
+                        .itemId(item.getId())
+                        .productId(item.getProduct().getId())
+                        .productName(item.getProduct().getName())
+                        .quantity(item.getQuantity())
+                        .unitPrice(item.getUnitPrice())
+                        .build())
+                .collect(Collectors.toList());
+
+        return OrderResponseDTO.builder()
+                .orderId(order.getId())
+                .orderCode(order.getOrderCode())
+                .customerEmail(order.getCustomerEmail())
+                .status(order.getStatus())
+                .totalAmount(order.getTotalAmount())
+                .createdAt(order.getCreatedAt())
+                .items(itemDTOs)
+                .build();
     }
 }
