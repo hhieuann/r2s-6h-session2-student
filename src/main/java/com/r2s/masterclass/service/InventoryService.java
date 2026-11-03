@@ -6,6 +6,7 @@ import com.r2s.masterclass.repository.InventoryAuditLogRepository;
 import com.r2s.masterclass.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +21,9 @@ public class InventoryService {
     private final ProductRepository productRepository;
     private final InventoryAuditLogRepository auditLogRepository;
     private final InventoryAuditRecorder auditRecorder;
+    private final InventoryOptimisticWorker optimisticWorker;
+
+    private static final long INITIAL_BACKOFF_MS = 40;
 
     public Product getProduct(Long productId) {
         return productRepository.findById(productId)
@@ -98,5 +102,41 @@ public class InventoryService {
         log.info("[Thread: {}] Stock deducted successfully. Remaining: {}",
                 Thread.currentThread().getName(), product.getStockQuantity());
         return true;
+    }
+
+    /**
+     * Module 3: trừ kho theo Optimistic Lock + Retry với Exponential Backoff (40ms, 80ms, 160ms...).
+     * Không giữ khóa dòng trong DB nên phù hợp tranh chấp thấp/trung bình, throughput cao.
+     * Cố ý KHÔNG đặt @Transactional ở đây: transaction nằm trong từng lần gọi worker.
+     *
+     * @return true nếu trừ kho thành công; false nếu hết hàng hoặc vẫn xung đột sau maxRetries lần thử
+     */
+    public boolean deductStockOptimisticWithRetry(Long productId, Integer quantity, int maxRetries) {
+        int attempts = 0;
+        long backoffMs = INITIAL_BACKOFF_MS;
+
+        while (attempts < maxRetries) {
+            try {
+                // Gọi qua proxy của worker -> mỗi lần là 1 transaction mới hoàn toàn
+                return optimisticWorker.deductSingle(productId, quantity);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                attempts++;
+                if (attempts >= maxRetries) {
+                    log.error("[Thread: {}] Vượt quá {} lần thử lại cho Product ID: {}",
+                            Thread.currentThread().getName(), maxRetries, productId);
+                    return false;
+                }
+                log.warn("[Thread: {}] Xung đột phiên bản lần {}/{}. Thử lại sau {}ms...",
+                        Thread.currentThread().getName(), attempts, maxRetries, backoffMs);
+                try {
+                    Thread.sleep(backoffMs);
+                    backoffMs *= 2;
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 }
