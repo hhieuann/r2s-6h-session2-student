@@ -5,6 +5,8 @@ import com.r2s.masterclass.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
@@ -18,29 +20,29 @@ public class InventoryService {
                 .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
     }
 
+    // Ghi đè tồn kho cũng phải khóa dòng, tránh đè mất lượt trừ kho đang diễn ra (lost update)
+    @Transactional
     public Product resetStock(Long productId, Integer newStock) {
-        Product product = getProduct(productId);
+        Product product = productRepository.findByIdWithPessimisticLock(productId)
+                .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
         product.setStockQuantity(newStock);
         return productRepository.save(product);
     }
 
     /**
-     * AI-GENERATED BUGGY METHOD:
-     * // TODO [Lab Task 2]: Fix Race Condition when 50 threads deduct stock simultaneously. Inventory goes negative!
-     *
-     * TẠI SAO KHO BỊ ÂM?
-     * 1. Check-Then-Act Flaw: AI dùng `findById` để kiểm tra `stockQuantity < quantity` trên RAM (không dùng DB Lock).
-     * 2. Thời điểm 50 luồng đồng thời ập đến, cả 50 luồng đều đọc stock = 10 -> CẢ 50 LUỒNG ĐỀU PASS ĐIỀU KIỆN!
-     * 3. Sau khi pass, AI gọi câu lệnh UPDATE trừ trực tiếp trong DB: `stockQuantity = stockQuantity - 1`.
-     * 4. Database tuần tự thực thi 50 lệnh trừ: 10 - 1 (x 50 lần) = -40!
-     * -> KẾT QUẢ: 50 đơn hàng thành công, tồn kho bị ÂM NẶNG (-40)!
+     * [FIX BUG 2 - RACE CONDITION]
+     * Trước: kiểm tra tồn kho trên RAM (findById, không khóa) rồi UPDATE trừ thẳng dưới DB
+     * -> 50 luồng cùng đọc stock = 10, cùng pass điều kiện, kho bị trừ còn -40.
+     * Sau: khóa dòng sản phẩm bằng SELECT ... FOR UPDATE trong cùng 1 transaction,
+     * nên "kiểm tra" và "trừ kho" trở thành một thao tác nguyên tử với các luồng khác.
      */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public boolean deductStock(Long productId, Integer quantity) {
         log.info("[Thread: {}] Attempting stock deduction for Product ID: {}, Quantity: {}",
                 Thread.currentThread().getName(), productId, quantity);
 
-        // 1. Kiểm tra tồn kho trên RAM (Không khóa hàng trong DB)
-        Product product = productRepository.findById(productId)
+        // 1. Khóa độc quyền dòng sản phẩm: luồng khác phải chờ tới khi transaction này kết thúc
+        Product product = productRepository.findByIdWithPessimisticLock(productId)
                 .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
 
         if (product.getStockQuantity() < quantity) {
@@ -56,10 +58,12 @@ public class InventoryService {
             Thread.currentThread().interrupt();
         }
 
-        // 2. AI sinh ra câu lệnh UPDATE trực tiếp dưới DB nhưng THIẾU ĐIỀU KIỆN "AND p.stockQuantity >= :quantity"
-        productRepository.deductStockDirect(productId, quantity);
+        // 2. Trừ kho trên entity đang được khóa và lưu lại
+        product.setStockQuantity(product.getStockQuantity() - quantity);
+        productRepository.save(product);
 
-        log.info("[Thread: {}] Stock deducted successfully via direct query.", Thread.currentThread().getName());
+        log.info("[Thread: {}] Stock deducted successfully. Remaining: {}",
+                Thread.currentThread().getName(), product.getStockQuantity());
         return true;
     }
 }
