@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -44,6 +45,81 @@ class InventoryServiceTest {
 
     @Mock
     private InventoryAuditRecorder auditRecorder;
+
+    @Mock
+    private InventoryOptimisticWorker optimisticWorker;
+
+    private static ObjectOptimisticLockingFailureException versionConflict() {
+        return new ObjectOptimisticLockingFailureException(Product.class, 1L);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: Thành công ngay lần đầu thì không retry")
+    void deductStockOptimistic_WhenNoConflict_ShouldSucceedOnFirstAttempt() {
+        when(optimisticWorker.deductSingle(1L, 1)).thenReturn(true);
+
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 1, 3);
+
+        assertThat(result).isTrue();
+        verify(optimisticWorker, times(1)).deductSingle(1L, 1);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: Xung đột version lần đầu, retry lần 2 thành công")
+    void deductStockOptimistic_WhenConflictThenSuccess_ShouldRetryAndSucceed() {
+        when(optimisticWorker.deductSingle(1L, 1))
+                .thenThrow(versionConflict())
+                .thenReturn(true);
+
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 1, 3);
+
+        assertThat(result).isTrue();
+        verify(optimisticWorker, times(2)).deductSingle(1L, 1);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: Xung đột liên tục thì dừng đúng sau maxRetries lần và trả về false")
+    void deductStockOptimistic_WhenConflictPersists_ShouldGiveUpAfterMaxRetries() {
+        when(optimisticWorker.deductSingle(1L, 1)).thenThrow(versionConflict());
+
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 1, 3);
+
+        assertThat(result).isFalse();
+        verify(optimisticWorker, times(3)).deductSingle(1L, 1);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: Hết hàng thì trả về false ngay, không retry")
+    void deductStockOptimistic_WhenInsufficientStock_ShouldReturnFalseWithoutRetry() {
+        when(optimisticWorker.deductSingle(1L, 5)).thenReturn(false);
+
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 5, 3);
+
+        assertThat(result).isFalse();
+        verify(optimisticWorker, times(1)).deductSingle(1L, 5);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: Bị interrupt trong lúc chờ backoff thì dừng và giữ cờ interrupt")
+    void deductStockOptimistic_WhenInterruptedDuringBackoff_ShouldStopAndKeepInterruptFlag() {
+        when(optimisticWorker.deductSingle(1L, 1)).thenThrow(versionConflict());
+
+        Thread.currentThread().interrupt();
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 1, 3);
+
+        assertThat(result).isFalse();
+        assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        verify(optimisticWorker, times(1)).deductSingle(1L, 1);
+    }
+
+    @Test
+    @DisplayName("deductStockOptimisticWithRetry: maxRetries = 0 thì không thử lần nào")
+    void deductStockOptimistic_WhenMaxRetriesIsZero_ShouldNotAttempt() {
+        boolean result = inventoryService.deductStockOptimisticWithRetry(1L, 1, 0);
+
+        assertThat(result).isFalse();
+        verifyNoInteractions(optimisticWorker);
+    }
 
     @InjectMocks
     private InventoryService inventoryService;
