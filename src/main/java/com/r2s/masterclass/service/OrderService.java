@@ -70,37 +70,24 @@ public class OrderService {
     }
 
     /**
-     * AI-GENERATED METHOD:
-     * // TODO [Lab Task 1]: Audit SQL logs. Notice 1,000+ SELECT queries generated. Refactor to 1 query using JOIN FETCH.
-     *
-     * BUG 1 (N+1 Query Defect):
-     * - Query 1: SELECT * FROM orders WHERE status = ?
-     * - Loop Query N: For every order, order.getItems() triggers: SELECT * FROM order_items WHERE order_id = ?
-     * - Loop Query N*M: For every item, item.getProduct().getName() triggers: SELECT * FROM products WHERE id = ?
-     * -> If there are 1,000 orders, this generates over 1,001+ round-trips to the database!
+     * [FIX BUG 1 - N+1 QUERY]
+     * Trước: findByStatus() + lazy load items/product trong vòng lặp -> 1 + N + N*M câu SQL.
+     * Sau: findByStatusWithItemsAndProducts() dùng JOIN FETCH -> chỉ 1 câu SQL duy nhất,
+     * vòng lặp bên dưới chỉ đọc dữ liệu đã nằm sẵn trong bộ nhớ.
      */
     @Transactional(readOnly = true)
     public List<OrderResponseDTO> getAllOrdersWithDetails(OrderStatus status) {
         log.info("Fetching orders with status: {}", status);
 
-        // 1. Root query
-        List<Order> orders = orderRepository.findByStatus(status);
+        List<Order> orders = orderRepository.findByStatusWithItemsAndProducts(status);
         List<OrderResponseDTO> results = new ArrayList<>();
 
-        // 2. Fatal In-Memory Iteration causing N+1 SQL storm
-        int orderIndex = 0;
         for (Order order : orders) {
-            orderIndex++;
-            if (orderIndex <= 3 || orderIndex % 250 == 0 || orderIndex == orders.size()) {
-                log.warn("[N+1 QUERY DETECTED] Đang kích hoạt câu SQL con lấy Items cho Order #{}/{} (Mã: {})", 
-                        orderIndex, orders.size(), order.getOrderCode());
-            }
-
             List<OrderItemResponseDTO> itemDTOs = order.getItems().stream()
                     .map(item -> OrderItemResponseDTO.builder()
                             .itemId(item.getId())
                             .productId(item.getProduct().getId())
-                            .productName(item.getProduct().getName()) // Triggers lazy load of Product!
+                            .productName(item.getProduct().getName()) // Product đã được JOIN FETCH, không bắn thêm SQL
                             .quantity(item.getQuantity())
                             .unitPrice(item.getUnitPrice())
                             .build())

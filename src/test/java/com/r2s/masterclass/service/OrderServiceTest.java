@@ -84,7 +84,7 @@ class OrderServiceTest {
 
         // TODO: [Student] 2. Mock hành vi của orderRepository
         // Lưu ý: Sau khi bạn fix Bug 1 (JOIN FETCH), hãy stub hàm repository tương ứng:
-        when(orderRepository.findByStatus(OrderStatus.PAID))
+        when(orderRepository.findByStatusWithItemsAndProducts(OrderStatus.PAID))
                 .thenReturn(List.of(sampleOrder));
 
         // TODO: [Student] 3. Kích hoạt hàm cần test (Act)
@@ -102,7 +102,7 @@ class OrderServiceTest {
     @DisplayName("getAllOrdersWithDetails: Trả về danh sách rỗng khi không có đơn hàng phù hợp")
     void getAllOrdersWithDetails_WhenNoOrdersFound_ShouldReturnEmptyList() {
         // TODO: [Student] Mock repository trả về danh sách rỗng và verify kết quả
-        when(orderRepository.findByStatus(OrderStatus.CANCELLED))
+        when(orderRepository.findByStatusWithItemsAndProducts(OrderStatus.CANCELLED))
                 .thenReturn(Collections.emptyList());
 
         List<OrderResponseDTO> result = orderService.getAllOrdersWithDetails(OrderStatus.CANCELLED);
