@@ -18,7 +18,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @SpringBootTest
 @ActiveProfiles("h2")
@@ -54,14 +54,15 @@ public class StudentInventoryConcurrencyTest {
     }
 
     @Test
-    @DisplayName("Chứng minh BUG 2: 50 luồng đồng thời làm âm kho hàng (Underflow)")
-    void testDemonstrateNegativeStockUnderflow() throws InterruptedException {
+    @DisplayName("Fix BUG 2: 50 luồng đồng thời -> đúng 10 thành công, 40 bị từ chối, tồn kho = 0")
+    void testPessimisticLockPreventsNegativeStock() throws InterruptedException {
         ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_USERS);
         CountDownLatch startSignal = new CountDownLatch(1);
         CountDownLatch finishSignal = new CountDownLatch(CONCURRENT_USERS);
 
         AtomicInteger successCounter = new AtomicInteger(0);
         AtomicInteger failCounter = new AtomicInteger(0);
+        AtomicInteger errorCounter = new AtomicInteger(0);
 
         for (int i = 0; i < CONCURRENT_USERS; i++) {
             executorService.submit(() -> {
@@ -75,6 +76,9 @@ public class StudentInventoryConcurrencyTest {
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    // Lỗi bất ngờ (vd: lock timeout) không được nuốt im lặng
+                    errorCounter.incrementAndGet();
                 } finally {
                     finishSignal.countDown();
                 }
@@ -88,17 +92,19 @@ public class StudentInventoryConcurrencyTest {
         Product finalProduct = productRepository.findById(testProductId).orElseThrow();
 
         System.out.println("==================================================");
-        System.out.println("   KẾT QUẢ TÁI HIỆN BUG 2 (CONCURRENCY UNDERFLOW) ");
+        System.out.println("   KẾT QUẢ SAU KHI FIX BUG 2 (PESSIMISTIC LOCK)   ");
         System.out.println("==================================================");
         System.out.println("Tồn kho ban đầu             : " + INITIAL_STOCK);
         System.out.println("Số luồng cùng mua           : " + CONCURRENT_USERS);
         System.out.println("Số đơn báo thành công       : " + successCounter.get());
         System.out.println("Số đơn bị từ chối           : " + failCounter.get());
+        System.out.println("Số lỗi bất ngờ              : " + errorCounter.get());
         System.out.println("TỒN KHO THỰC TẾ CUỐI CÙNG   : " + finalProduct.getStockQuantity());
         System.out.println("==================================================");
 
-        // Chứng minh kho hàng bị âm (nhỏ hơn 0)
-        assertTrue(finalProduct.getStockQuantity() < 0,
-                "Kho hàng phải bị âm do lỗi Check-Then-Act thiếu DB Lock!");
+        assertEquals(0, errorCounter.get(), "Không được có lỗi bất ngờ trong lúc tranh chấp khóa");
+        assertEquals(INITIAL_STOCK, successCounter.get(), "Chỉ đúng 10 giao dịch được thành công");
+        assertEquals(CONCURRENT_USERS - INITIAL_STOCK, failCounter.get(), "40 giao dịch còn lại phải bị từ chối an toàn");
+        assertEquals(0, finalProduct.getStockQuantity(), "Tồn kho cuối cùng phải bằng đúng 0, không được âm");
     }
 }
