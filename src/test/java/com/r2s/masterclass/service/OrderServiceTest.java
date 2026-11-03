@@ -15,6 +15,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -133,6 +136,33 @@ class OrderServiceTest {
         List<OrderResponseDTO> result = orderService.getAllOrdersWithDetails(OrderStatus.CANCELLED);
 
         assertThat(result).isNotNull().isEmpty();
+    }
+
+    @Test
+    @DisplayName("getOrdersPaged: Ánh xạ từng Order trong trang sang DTO và giữ nguyên metadata phân trang")
+    void getOrdersPaged_ShouldMapPageContentAndKeepMetadata() {
+        Product product = Product.builder().id(5L).name("AirPods Pro 2").price(BigDecimal.TEN).build();
+        Order order = Order.builder()
+                .id(3L).orderCode("ORD-PAGED").customerEmail("paged@r2s.edu.vn")
+                .status(OrderStatus.PAID).items(new ArrayList<>())
+                .build();
+        order.getItems().add(OrderItem.builder()
+                .id(30L).order(order).product(product).quantity(1).unitPrice(BigDecimal.TEN).build());
+
+        PageRequest pageable = PageRequest.of(1, 1);
+        when(orderRepository.findOrdersPaged(OrderStatus.PAID, pageable))
+                .thenReturn(new PageImpl<>(List.of(order), pageable, 3));
+
+        Page<OrderResponseDTO> result = orderService.getOrdersPaged(OrderStatus.PAID, pageable);
+
+        assertThat(result.getTotalElements()).isEqualTo(3);
+        assertThat(result.getTotalPages()).isEqualTo(3);
+        assertThat(result.getNumber()).isEqualTo(1);
+        assertThat(result.getContent()).singleElement().satisfies(dto -> {
+            assertThat(dto.getOrderCode()).isEqualTo("ORD-PAGED");
+            assertThat(dto.getItems()).singleElement()
+                    .satisfies(item -> assertThat(item.getProductName()).isEqualTo("AirPods Pro 2"));
+        });
     }
 
     @Test
