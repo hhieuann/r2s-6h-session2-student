@@ -1,6 +1,9 @@
 package com.r2s.masterclass.service;
 
+import com.r2s.masterclass.domain.InventoryAuditLog;
 import com.r2s.masterclass.domain.Product;
+import com.r2s.masterclass.dto.InventoryAuditLogResponseDTO;
+import com.r2s.masterclass.repository.InventoryAuditLogRepository;
 import com.r2s.masterclass.repository.ProductRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +15,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +38,12 @@ class InventoryServiceTest {
 
     @Mock
     private ProductRepository productRepository;
+
+    @Mock
+    private InventoryAuditLogRepository auditLogRepository;
+
+    @Mock
+    private InventoryAuditRecorder auditRecorder;
 
     @InjectMocks
     private InventoryService inventoryService;
@@ -67,6 +78,8 @@ class InventoryServiceTest {
         assertThat(saved.getValue().getStockQuantity()).isEqualTo(7);
         // Phải đọc qua hàm có khóa, không được dùng findById không khóa
         verify(productRepository, never()).findById(any());
+        // Module 1: ghi audit log DEDUCT với tồn kho trước/sau chính xác
+        verify(auditRecorder).record(productId, InventoryAuditRecorder.ACTION_DEDUCT, 3, 10, 7);
     }
 
     @Test
@@ -94,6 +107,8 @@ class InventoryServiceTest {
         assertThat(result).isFalse();
         assertThat(product.getStockQuantity()).isEqualTo(2);
         verify(productRepository, never()).save(any());
+        // Không trừ kho thì không được ghi audit log
+        verifyNoInteractions(auditRecorder);
     }
 
     @Test
@@ -160,6 +175,30 @@ class InventoryServiceTest {
 
         assertThat(updated.getStockQuantity()).isEqualTo(100);
         verify(productRepository, times(1)).save(product);
+        verify(auditRecorder).record(productId, InventoryAuditRecorder.ACTION_RESTOCK, 95, 5, 100);
+    }
+
+    @Test
+    @DisplayName("getAuditLogs: Ánh xạ đúng lịch sử biến động kho sang DTO")
+    void getAuditLogs_WhenLogsExist_ShouldMapToDtos() {
+        LocalDateTime now = LocalDateTime.now();
+        InventoryAuditLog entry = InventoryAuditLog.builder()
+                .id(7L).productId(1L).action("DEDUCT")
+                .changedQuantity(2).previousStock(10).newStock(8).createdAt(now)
+                .build();
+        when(auditLogRepository.findByProductIdOrderByCreatedAtDesc(1L)).thenReturn(List.of(entry));
+
+        List<InventoryAuditLogResponseDTO> result = inventoryService.getAuditLogs(1L);
+
+        assertThat(result).singleElement().satisfies(dto -> {
+            assertThat(dto.getLogId()).isEqualTo(7L);
+            assertThat(dto.getProductId()).isEqualTo(1L);
+            assertThat(dto.getAction()).isEqualTo("DEDUCT");
+            assertThat(dto.getChangedQuantity()).isEqualTo(2);
+            assertThat(dto.getPreviousStock()).isEqualTo(10);
+            assertThat(dto.getNewStock()).isEqualTo(8);
+            assertThat(dto.getCreatedAt()).isEqualTo(now);
+        });
     }
 
     @Test
