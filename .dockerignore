@@ -1,0 +1,16 @@
+# Không gửi những thứ này vào Docker build context (nhẹ hơn, không lộ bí mật)
+target/
+.git/
+.github/
+.idea/
+.vscode/
+*.iml
+*.log
+.env
+.env.*
+*.pem
+*.key
+secrets/
+*.sh
+Dockerfile
+docker-compose*.yml

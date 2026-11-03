@@ -1,10 +1,17 @@
 package com.r2s.masterclass.service;
 
 import com.r2s.masterclass.domain.Product;
+import com.r2s.masterclass.dto.InventoryAuditLogResponseDTO;
+import com.r2s.masterclass.repository.InventoryAuditLogRepository;
 import com.r2s.masterclass.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -12,35 +19,62 @@ import org.springframework.stereotype.Service;
 public class InventoryService {
 
     private final ProductRepository productRepository;
+    private final InventoryAuditLogRepository auditLogRepository;
+    private final InventoryAuditRecorder auditRecorder;
+    private final InventoryOptimisticWorker optimisticWorker;
+
+    private static final long INITIAL_BACKOFF_MS = 40;
 
     public Product getProduct(Long productId) {
         return productRepository.findById(productId)
                 .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
     }
 
+    // Ghi đè tồn kho cũng phải khóa dòng, tránh đè mất lượt trừ kho đang diễn ra (lost update)
+    @Transactional
     public Product resetStock(Long productId, Integer newStock) {
-        Product product = getProduct(productId);
+        Product product = productRepository.findByIdWithPessimisticLock(productId)
+                .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
+        int previousStock = product.getStockQuantity();
         product.setStockQuantity(newStock);
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+
+        // changedQuantity có dấu: dương là nhập thêm, âm là giảm bớt
+        auditRecorder.record(productId, InventoryAuditRecorder.ACTION_RESTOCK,
+                newStock - previousStock, previousStock, newStock);
+        return saved;
+    }
+
+    /** Lịch sử biến động kho của 1 sản phẩm, mới nhất trước. */
+    @Transactional(readOnly = true)
+    public List<InventoryAuditLogResponseDTO> getAuditLogs(Long productId) {
+        return auditLogRepository.findByProductIdOrderByCreatedAtDesc(productId).stream()
+                .map(entry -> InventoryAuditLogResponseDTO.builder()
+                        .logId(entry.getId())
+                        .productId(entry.getProductId())
+                        .action(entry.getAction())
+                        .changedQuantity(entry.getChangedQuantity())
+                        .previousStock(entry.getPreviousStock())
+                        .newStock(entry.getNewStock())
+                        .createdAt(entry.getCreatedAt())
+                        .build())
+                .toList();
     }
 
     /**
-     * AI-GENERATED BUGGY METHOD:
-     * // TODO [Lab Task 2]: Fix Race Condition when 50 threads deduct stock simultaneously. Inventory goes negative!
-     *
-     * TẠI SAO KHO BỊ ÂM?
-     * 1. Check-Then-Act Flaw: AI dùng `findById` để kiểm tra `stockQuantity < quantity` trên RAM (không dùng DB Lock).
-     * 2. Thời điểm 50 luồng đồng thời ập đến, cả 50 luồng đều đọc stock = 10 -> CẢ 50 LUỒNG ĐỀU PASS ĐIỀU KIỆN!
-     * 3. Sau khi pass, AI gọi câu lệnh UPDATE trừ trực tiếp trong DB: `stockQuantity = stockQuantity - 1`.
-     * 4. Database tuần tự thực thi 50 lệnh trừ: 10 - 1 (x 50 lần) = -40!
-     * -> KẾT QUẢ: 50 đơn hàng thành công, tồn kho bị ÂM NẶNG (-40)!
+     * [FIX BUG 2 - RACE CONDITION]
+     * Trước: kiểm tra tồn kho trên RAM (findById, không khóa) rồi UPDATE trừ thẳng dưới DB
+     * -> 50 luồng cùng đọc stock = 10, cùng pass điều kiện, kho bị trừ còn -40.
+     * Sau: khóa dòng sản phẩm bằng SELECT ... FOR UPDATE trong cùng 1 transaction,
+     * nên "kiểm tra" và "trừ kho" trở thành một thao tác nguyên tử với các luồng khác.
      */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public boolean deductStock(Long productId, Integer quantity) {
         log.info("[Thread: {}] Attempting stock deduction for Product ID: {}, Quantity: {}",
                 Thread.currentThread().getName(), productId, quantity);
 
-        // 1. Kiểm tra tồn kho trên RAM (Không khóa hàng trong DB)
-        Product product = productRepository.findById(productId)
+        // 1. Khóa độc quyền dòng sản phẩm: luồng khác phải chờ tới khi transaction này kết thúc
+        Product product = productRepository.findByIdWithPessimisticLock(productId)
                 .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
 
         if (product.getStockQuantity() < quantity) {
@@ -56,10 +90,53 @@ public class InventoryService {
             Thread.currentThread().interrupt();
         }
 
-        // 2. AI sinh ra câu lệnh UPDATE trực tiếp dưới DB nhưng THIẾU ĐIỀU KIỆN "AND p.stockQuantity >= :quantity"
-        productRepository.deductStockDirect(productId, quantity);
+        // 2. Trừ kho trên entity đang được khóa và lưu lại
+        int previousStock = product.getStockQuantity();
+        product.setStockQuantity(previousStock - quantity);
+        productRepository.save(product);
 
-        log.info("[Thread: {}] Stock deducted successfully via direct query.", Thread.currentThread().getName());
+        // 3. Ghi audit log trong cùng transaction: trừ kho rollback thì log cũng rollback
+        auditRecorder.record(productId, InventoryAuditRecorder.ACTION_DEDUCT,
+                quantity, previousStock, product.getStockQuantity());
+
+        log.info("[Thread: {}] Stock deducted successfully. Remaining: {}",
+                Thread.currentThread().getName(), product.getStockQuantity());
         return true;
+    }
+
+    /**
+     * Module 3: trừ kho theo Optimistic Lock + Retry với Exponential Backoff (40ms, 80ms, 160ms...).
+     * Không giữ khóa dòng trong DB nên phù hợp tranh chấp thấp/trung bình, throughput cao.
+     * Cố ý KHÔNG đặt @Transactional ở đây: transaction nằm trong từng lần gọi worker.
+     *
+     * @return true nếu trừ kho thành công; false nếu hết hàng hoặc vẫn xung đột sau maxRetries lần thử
+     */
+    public boolean deductStockOptimisticWithRetry(Long productId, Integer quantity, int maxRetries) {
+        int attempts = 0;
+        long backoffMs = INITIAL_BACKOFF_MS;
+
+        while (attempts < maxRetries) {
+            try {
+                // Gọi qua proxy của worker -> mỗi lần là 1 transaction mới hoàn toàn
+                return optimisticWorker.deductSingle(productId, quantity);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                attempts++;
+                if (attempts >= maxRetries) {
+                    log.error("[Thread: {}] Vượt quá {} lần thử lại cho Product ID: {}",
+                            Thread.currentThread().getName(), maxRetries, productId);
+                    return false;
+                }
+                log.warn("[Thread: {}] Xung đột phiên bản lần {}/{}. Thử lại sau {}ms...",
+                        Thread.currentThread().getName(), attempts, maxRetries, backoffMs);
+                try {
+                    Thread.sleep(backoffMs);
+                    backoffMs *= 2;
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 }

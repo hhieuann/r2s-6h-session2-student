@@ -36,3 +36,20 @@ build/
 Thumbs.db
 *.log
 *.tmp
+
+### Red-Zone: secrets & cấu hình nhạy cảm (KHÔNG BAO GIỜ commit) ###
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*.crt
+secrets/
+src/main/resources/application-local.yml
+src/main/resources/application-prod.yml
+
+### Claude Code: setting cá nhân trên máy ###
+.claude/settings.local.json
