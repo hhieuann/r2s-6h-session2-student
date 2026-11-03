@@ -25,6 +25,28 @@ services:
     networks:
       - r2s-student-network
 
+  # --------------------------------------------------------------------------
+  # Application Service (Task 4): chỉ chạy khi bật profile "app"
+  #   docker compose --profile app up -d --build
+  # --------------------------------------------------------------------------
+  app:
+    profiles: ["app"]
+    build: .
+    image: r2s-order-service:v1
+    container_name: r2s-order-service
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/ecommerce_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgrespassword
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0"
+    ports:
+      - "8080:8080"
+    networks:
+      - r2s-student-network
+
 networks:
   r2s-student-network:
     driver: bridge
