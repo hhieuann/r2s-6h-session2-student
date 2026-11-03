@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./src/main/resources/application*.yml)",
+      "Read(./src/main/resources/application*.properties)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./secrets/**)",
+      "Edit(./src/main/resources/application*.yml)",
+      "Edit(./src/main/resources/application*.properties)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(./**/*.pem)",
+      "Edit(./**/*.key)",
+      "Edit(./secrets/**)"
+    ]
+  }
+}
